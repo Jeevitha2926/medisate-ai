@@ -1,12 +1,11 @@
 import streamlit as st
 import requests
 import re
-from urllib.parse import quote
 from itertools import combinations
 
 # ============================================================
 # MEDISATE AI
-# Exact medicine identification + FDA label + interaction check
+# Medicine Information & Interaction Assistant
 # ============================================================
 
 st.set_page_config(
@@ -15,56 +14,51 @@ st.set_page_config(
     layout="wide"
 )
 
-# ------------------------------------------------------------
-# Styling
-# ------------------------------------------------------------
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-st.markdown("""
-<style>
+RXNORM_BASE = "https://rxnav.nlm.nih.gov/REST"
+OPENFDA_BASE = "https://api.fda.gov/drug/label.json"
+
+REQUEST_TIMEOUT = 15
+
+
+# ============================================================
+# PAGE STYLE
+# ============================================================
+
+st.markdown(
+    """
+    <style>
     .main {
         max-width: 1100px;
         margin: auto;
     }
 
     .title {
-        font-size: 48px;
+        font-size: 46px;
         font-weight: 800;
         margin-bottom: 5px;
     }
 
     .subtitle {
         font-size: 18px;
-        margin-bottom: 30px;
+        margin-bottom: 25px;
     }
 
     .section-title {
-        font-size: 32px;
+        font-size: 30px;
         font-weight: 750;
-        margin-top: 35px;
+        margin-top: 30px;
         margin-bottom: 15px;
     }
 
     .medicine-title {
-        font-size: 30px;
+        font-size: 28px;
         font-weight: 750;
-        margin-top: 30px;
-    }
-
-    .card {
-        padding: 20px;
-        border-radius: 12px;
-        margin: 12px 0;
-    }
-
-    .warning-card {
-        padding: 18px;
-        border-radius: 12px;
-        margin: 15px 0;
-    }
-
-    .small-text {
-        font-size: 15px;
-        opacity: 0.85;
+        margin-top: 25px;
+        margin-bottom: 10px;
     }
 
     div.stButton > button {
@@ -73,87 +67,33 @@ st.markdown("""
         font-size: 17px;
         border-radius: 10px;
     }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-RXNORM_BASE = "https://rxnav.nlm.nih.gov/REST"
-OPENFDA_BASE = "https://api.fda.gov/drug/label.json"
-
-REQUEST_TIMEOUT = 12
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 
 # ============================================================
 # COMMON MEDICINE ALIASES
 # ============================================================
 
-# These are important because users may enter either generic
-# or commonly used alternative names.
-
 MEDICINE_ALIASES = {
     "paracetamol": "acetaminophen",
     "acetaminol": "acetaminophen",
     "tylenol": "acetaminophen",
 
-    "ibuprofen": "ibuprofen",
     "advil": "ibuprofen",
     "motrin": "ibuprofen",
 
-    "aspirin": "aspirin",
     "acetylsalicylic acid": "aspirin",
 
-    "naproxen": "naproxen",
     "aleve": "naproxen",
 
-    "diclofenac": "diclofenac",
     "voltaren": "diclofenac",
 
-    "cetirizine": "cetirizine",
     "zyrtec": "cetirizine",
 
-    "loratadine": "loratadine",
-    "claritin": "loratadine",
-
-    "amoxicillin": "amoxicillin",
-    "azithromycin": "azithromycin",
-
-    "omeprazole": "omeprazole",
-    "pantoprazole": "pantoprazole",
-
-    "metformin": "metformin",
-
-    "atorvastatin": "atorvastatin",
-
-    "paracetamol 500": "acetaminophen",
-    "acetaminophen 500": "acetaminophen",
-}
-
-
-# ============================================================
-# KNOWN INGREDIENT RXCUI VALUES
-# ============================================================
-
-# Ingredient-level RxNorm IDs.
-# Using these prevents RxNorm from choosing combination products.
-
-KNOWN_RXCUI = {
-    "acetaminophen": "161",
-    "ibuprofen": "5640",
-    "aspirin": "1191",
-    "naproxen": "7258",
-    "diclofenac": "3355",
-    "cetirizine": "2678",
-    "loratadine": "153165",
-    "amoxicillin": "723",
-    "azithromycin": "18631",
-    "omeprazole": "7646",
-    "pantoprazole": "40790",
-    "metformin": "6809",
-    "atorvastatin": "83367",
+    "claritin": "loratadine"
 }
 
 
@@ -166,11 +106,11 @@ if "medicine_cache" not in st.session_state:
 
 
 # ============================================================
-# UTILITY FUNCTIONS
+# BASIC TEXT CLEANING
 # ============================================================
 
 def clean_text(value):
-    """Clean text safely."""
+
     if value is None:
         return ""
 
@@ -180,74 +120,300 @@ def clean_text(value):
     value = str(value)
 
     value = value.replace("\n", " ")
-    value = re.sub(r"\s+", " ", value)
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
 
     return value.strip()
 
 
+# ============================================================
+# DETECT DOSAGE FORM
+# ============================================================
+
+def extract_dosage_form(name):
+
+    text = clean_text(name).lower()
+
+    forms = [
+        ("eye drops", "ophthalmic"),
+        ("ophthalmic", "ophthalmic"),
+
+        ("ear drops", "otic"),
+        ("otic", "otic"),
+
+        ("oral suspension", "oral suspension"),
+        ("suspension", "suspension"),
+
+        ("oral solution", "oral solution"),
+        ("solution", "solution"),
+
+        ("syrup", "syrup"),
+        ("syrups", "syrup"),
+
+        ("tablet", "tablet"),
+        ("tablets", "tablet"),
+        ("tab", "tablet"),
+        ("tabs", "tablet"),
+
+        ("capsule", "capsule"),
+        ("capsules", "capsule"),
+        ("cap", "capsule"),
+        ("caps", "capsule"),
+
+        ("injection", "injection"),
+        ("injectable", "injection"),
+
+        ("cream", "cream"),
+        ("creams", "cream"),
+
+        ("ointment", "ointment"),
+        ("ointments", "ointment"),
+
+        ("gel", "gel"),
+        ("gels", "gel"),
+
+        ("lotion", "lotion"),
+        ("lotions", "lotion"),
+
+        ("powder", "powder"),
+        ("powders", "powder"),
+
+        ("spray", "spray"),
+        ("sprays", "spray"),
+
+        ("inhaler", "inhaler"),
+        ("inhalers", "inhaler"),
+
+        ("patch", "patch"),
+        ("patches", "patch"),
+
+        ("lozenge", "lozenge"),
+        ("lozenges", "lozenge"),
+
+        ("mouthwash", "mouthwash")
+    ]
+
+    for keyword, normalized_form in forms:
+
+        if re.search(
+            rf"\b{re.escape(keyword)}\b",
+            text
+        ):
+            return normalized_form
+
+    return ""
+
+
+# ============================================================
+# NORMALIZE MEDICINE NAME
+# ============================================================
+
 def normalize_name(name):
-    """Normalize medicine names for comparison."""
+
     name = clean_text(name).lower()
 
     name = name.replace("-", " ")
-    name = re.sub(r"\([^)]*\)", "", name)
+    name = name.replace("_", " ")
 
-    # Remove strength information.
+    # Remove text inside brackets
     name = re.sub(
-        r"\b\d+(?:\.\d+)?\s*(mg|mcg|g|ml|iu|%)\b",
+        r"\([^)]*\)",
         "",
         name
     )
 
-    name = re.sub(r"\s+", " ", name)
+    dosage_forms = [
+        "oral suspension",
+        "oral solution",
+        "eye drops",
+        "ear drops",
+        "ophthalmic",
+        "otic",
+
+        "tablet",
+        "tablets",
+        "tab",
+        "tabs",
+
+        "capsule",
+        "capsules",
+        "cap",
+        "caps",
+
+        "syrup",
+        "syrups",
+
+        "suspension",
+        "suspensions",
+
+        "solution",
+        "solutions",
+
+        "drops",
+        "drop",
+
+        "injection",
+        "injectable",
+
+        "cream",
+        "creams",
+
+        "ointment",
+        "ointments",
+
+        "gel",
+        "gels",
+
+        "lotion",
+        "lotions",
+
+        "powder",
+        "powders",
+
+        "spray",
+        "sprays",
+
+        "inhaler",
+        "inhalers",
+
+        "patch",
+        "patches",
+
+        "lozenge",
+        "lozenges",
+
+        "granules",
+        "granule",
+
+        "mouthwash"
+    ]
+
+    for form in sorted(
+        dosage_forms,
+        key=len,
+        reverse=True
+    ):
+
+        name = re.sub(
+            rf"\b{re.escape(form)}\b",
+            " ",
+            name
+        )
+
+    # Remove concentrations such as:
+    # 250mg/5ml
+    # 100 mg / 5 ml
+
+    name = re.sub(
+        r"\b\d+(?:\.\d+)?\s*"
+        r"(?:mg|mcg|g|ml)"
+        r"\s*/\s*"
+        r"\d+(?:\.\d+)?\s*"
+        r"(?:mg|mcg|g|ml)\b",
+        " ",
+        name,
+        flags=re.IGNORECASE
+    )
+
+    # Remove strengths such as:
+    # 500mg
+    # 5ml
+    # 10mg
+
+    name = re.sub(
+        r"\b\d+(?:\.\d+)?\s*"
+        r"(?:mg|mcg|g|kg|ml|iu|%)\b",
+        " ",
+        name,
+        flags=re.IGNORECASE
+    )
+
+    name = re.sub(
+        r"\s+",
+        " ",
+        name
+    )
 
     return name.strip()
 
 
-def get_canonical_name(user_name):
-    """Convert brand/synonym to generic ingredient."""
-    normalized = normalize_name(user_name)
+# ============================================================
+# GET CANONICAL MEDICINE NAME
+# ============================================================
 
-    if normalized in MEDICINE_ALIASES:
-        return MEDICINE_ALIASES[normalized]
+def get_canonical_name(name):
 
-    return normalized
+    normalized = normalize_name(name)
+
+    normalized = re.sub(
+        r"\b("
+        r"tablet|tablets|tab|tabs|"
+        r"capsule|capsules|cap|caps|"
+        r"syrup|syrups|"
+        r"suspension|suspensions|"
+        r"solution|solutions|"
+        r"drops|drop|"
+        r"ophthalmic|otic|"
+        r"injection|injectable|"
+        r"cream|creams|"
+        r"ointment|ointments|"
+        r"gel|gels|"
+        r"lotion|lotions|"
+        r"powder|powders|"
+        r"spray|sprays|"
+        r"inhaler|inhalers|"
+        r"patch|patches|"
+        r"lozenge|lozenges|"
+        r"granules|granule|"
+        r"mouthwash"
+        r")\b",
+        " ",
+        normalized,
+        flags=re.IGNORECASE
+    )
+
+    normalized = re.sub(
+        r"\b\d+(?:\.\d+)?\s*"
+        r"(?:mg|mcg|g|kg|ml|iu|%)\b",
+        " ",
+        normalized,
+        flags=re.IGNORECASE
+    )
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        normalized
+    ).strip()
+
+    return MEDICINE_ALIASES.get(
+        normalized,
+        normalized
+    )
 
 
 # ============================================================
-# RXNORM FUNCTIONS
+# RXNORM MEDICINE SEARCH
 # ============================================================
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(
+    ttl=86400,
+    show_spinner=False
+)
 def get_rxnorm_rxcui(medicine):
-    """
-    Get an ingredient-level RxCUI.
 
-    IMPORTANT:
-    We deliberately avoid selecting the first approximate result
-    because that can return combination products such as:
-        famotidine + ibuprofen
-        acetaminophen + aspirin + caffeine
-    """
-
-    medicine = get_canonical_name(medicine)
-
-    # --------------------------------------------------------
-    # First: use our known ingredient map
-    # --------------------------------------------------------
-
-    if medicine in KNOWN_RXCUI:
-        return KNOWN_RXCUI[medicine]
-
-    # --------------------------------------------------------
-    # Second: exact RxNorm lookup
-    # --------------------------------------------------------
+    medicine = get_canonical_name(
+        medicine
+    )
 
     try:
-        url = f"{RXNORM_BASE}/rxcui.json"
 
         response = requests.get(
-            url,
+            f"{RXNORM_BASE}/rxcui.json",
             params={
                 "name": medicine,
                 "search": "2"
@@ -260,233 +426,68 @@ def get_rxnorm_rxcui(medicine):
 
         data = response.json()
 
-        ids = data.get("idGroup", {}).get("rxnormId", [])
+        ids = (
+            data
+            .get("idGroup", {})
+            .get("rxnormId", [])
+        )
 
         if not ids:
             return None
 
-        # Try every candidate and select an ingredient concept.
-        for rxcui in ids:
-
-            try:
-                props_url = f"{RXNORM_BASE}/rxcui/{rxcui}/properties.json"
-
-                props_response = requests.get(
-                    props_url,
-                    timeout=REQUEST_TIMEOUT
-                )
-
-                if props_response.status_code != 200:
-                    continue
-
-                props = props_response.json().get(
-                    "properties",
-                    {}
-                )
-
-                name = clean_text(
-                    props.get("name", "")
-                ).lower()
-
-                tty = clean_text(
-                    props.get("tty", "")
-                ).upper()
-
-                # Ingredient concept types:
-                # IN  = Ingredient
-                # PIN = Precise Ingredient
-                if tty in ("IN", "PIN"):
-
-                    if normalize_name(name) == medicine:
-                        return str(rxcui)
-
-            except Exception:
-                continue
-
-        # Last safe fallback:
-        # only use first ID if it is not obviously a combination.
-        for rxcui in ids:
-
-            try:
-                props_url = f"{RXNORM_BASE}/rxcui/{rxcui}/properties.json"
-
-                props_response = requests.get(
-                    props_url,
-                    timeout=REQUEST_TIMEOUT
-                )
-
-                if props_response.status_code != 200:
-                    continue
-
-                props = props_response.json().get(
-                    "properties",
-                    {}
-                )
-
-                name = clean_text(
-                    props.get("name", "")
-                ).lower()
-
-                tty = clean_text(
-                    props.get("tty", "")
-                ).upper()
-
-                if tty in ("IN", "PIN"):
-
-                    # Don't accept an obviously different name.
-                    if medicine in normalize_name(name):
-                        return str(rxcui)
-
-            except Exception:
-                continue
+        return str(ids[0])
 
     except Exception:
+
         return None
 
-    return None
 
+# ============================================================
+# RXNORM PROPERTIES
+# ============================================================
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(
+    ttl=86400,
+    show_spinner=False
+)
 def get_rxnorm_properties(rxcui):
-    """Get properties for an RxCUI."""
 
     if not rxcui:
         return {}
 
     try:
-        url = f"{RXNORM_BASE}/rxcui/{rxcui}/properties.json"
 
         response = requests.get(
-            url,
+            f"{RXNORM_BASE}/rxcui/{rxcui}/properties.json",
             timeout=REQUEST_TIMEOUT
         )
 
         if response.status_code != 200:
             return {}
 
-        return response.json().get(
-            "properties",
-            {}
+        return (
+            response.json()
+            .get("properties", {})
         )
 
     except Exception:
+
         return {}
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_rxnorm_related(rxcui):
-    """
-    Retrieve related RxNorm concepts.
-
-    This is used only for information.
-    We DO NOT replace the ingredient RxCUI with a combination product.
-    """
-
-    if not rxcui:
-        return []
-
-    try:
-        url = f"{RXNORM_BASE}/rxcui/{rxcui}/allrelated.json"
-
-        response = requests.get(
-            url,
-            timeout=REQUEST_TIMEOUT
-        )
-
-        if response.status_code != 200:
-            return []
-
-        data = response.json()
-
-        groups = data.get(
-            "allRelatedGroup",
-            {}
-        ).get(
-            "conceptGroup",
-            []
-        )
-
-        results = []
-
-        for group in groups:
-
-            tty = group.get("tty", "")
-
-            for concept in group.get("conceptProperties", []):
-
-                results.append({
-                    "rxcui": concept.get("rxcui"),
-                    "name": concept.get("name"),
-                    "tty": tty
-                })
-
-        return results
-
-    except Exception:
-        return []
-
-
 # ============================================================
-# FDA LABEL FUNCTIONS
+# CHOOSE BEST FDA LABEL
 # ============================================================
 
-@st.cache_data(ttl=21600, show_spinner=False)
-def get_fda_label(medicine):
-    """
-    Retrieve FDA label information.
+def choose_best_fda_label(
+    results,
+    medicine,
+    dosage_form=""
+):
 
-    Search is based on the generic ingredient rather than a
-    random product returned by RxNorm.
-    """
-
-    canonical = get_canonical_name(medicine)
-
-    search_fields = [
-        f'openfda.generic_name:"{canonical}"',
-        f'openfda.substance_name:"{canonical}"',
-        f'openfda.brand_name:"{canonical}"'
-    ]
-
-    for search in search_fields:
-
-        try:
-
-            response = requests.get(
-                OPENFDA_BASE,
-                params={
-                    "search": search,
-                    "limit": 10
-                },
-                timeout=REQUEST_TIMEOUT
-            )
-
-            if response.status_code != 200:
-                continue
-
-            data = response.json()
-
-            results = data.get("results", [])
-
-            if results:
-                return choose_best_fda_label(
-                    results,
-                    canonical
-                )
-
-        except Exception:
-            continue
-
-    return None
-
-
-def choose_best_fda_label(results, medicine):
-    """
-    Choose the most relevant FDA label.
-
-    Avoid combination products when possible.
-    """
-
-    medicine = normalize_name(medicine)
+    medicine = normalize_name(
+        medicine
+    )
 
     scored = []
 
@@ -494,68 +495,159 @@ def choose_best_fda_label(results, medicine):
 
         score = 0
 
-        generic_names = label.get(
+        openfda = label.get(
             "openfda",
             {}
-        ).get(
+        )
+
+        names = []
+
+        for field in [
             "generic_name",
-            []
-        )
-
-        substances = label.get(
-            "openfda",
-            {}
-        ).get(
             "substance_name",
-            []
+            "brand_name"
+        ]:
+
+            values = openfda.get(
+                field,
+                []
+            )
+
+            if not isinstance(
+                values,
+                list
+            ):
+                values = [values]
+
+            for value in values:
+
+                names.append(
+                    clean_text(
+                        value
+                    ).lower()
+                )
+
+        combined_names = " ".join(
+            names
         )
 
-        brands = label.get(
-            "openfda",
-            {}
-        ).get(
-            "brand_name",
-            []
+        normalized_names = normalize_name(
+            combined_names
         )
 
-        all_names = []
+        # Medicine name match
+        if medicine in normalized_names:
+            score += 30
 
-        for item in generic_names:
-            all_names.append(clean_text(item).lower())
+        # Dosage form matching
+        if dosage_form:
 
-        for item in substances:
-            all_names.append(clean_text(item).lower())
+            form_keywords = {
 
-        for item in brands:
-            all_names.append(clean_text(item).lower())
+                "ophthalmic": [
+                    "ophthalmic",
+                    "eye",
+                    "eye drops"
+                ],
 
-        combined = " ".join(all_names)
+                "otic": [
+                    "otic",
+                    "ear"
+                ],
 
-        normalized_combined = normalize_name(combined)
+                "syrup": [
+                    "syrup"
+                ],
 
-        # Exact ingredient match gets highest priority.
-        if medicine in normalized_combined:
-            score += 20
+                "suspension": [
+                    "suspension"
+                ],
 
-        # Penalize common combination products.
-        combination_terms = [
-            " and ",
-            "/",
-            "+",
-            "acetaminophen/aspirin",
-            "aspirin/caffeine",
-            "famotidine/ibuprofen",
-            "hydrochlorothiazide",
-            "amlodipine",
-            "caffeine"
-        ]
+                "oral suspension": [
+                    "oral suspension",
+                    "suspension"
+                ],
 
-        for term in combination_terms:
-            if term in combined:
-                score -= 10
+                "solution": [
+                    "solution"
+                ],
+
+                "oral solution": [
+                    "oral solution",
+                    "solution"
+                ],
+
+                "tablet": [
+                    "tablet"
+                ],
+
+                "capsule": [
+                    "capsule"
+                ],
+
+                "injection": [
+                    "injection",
+                    "injectable"
+                ],
+
+                "cream": [
+                    "cream"
+                ],
+
+                "ointment": [
+                    "ointment"
+                ],
+
+                "gel": [
+                    "gel"
+                ],
+
+                "inhaler": [
+                    "inhaler"
+                ],
+
+                "spray": [
+                    "spray"
+                ],
+
+                "patch": [
+                    "patch"
+                ]
+            }
+
+            keywords = form_keywords.get(
+                dosage_form,
+                [dosage_form]
+            )
+
+            label_text = clean_text(
+                str(label)
+            ).lower()
+
+            matched = False
+
+            for keyword in keywords:
+
+                if keyword in combined_names:
+
+                    score += 40
+                    matched = True
+                    break
+
+            if not matched:
+
+                for keyword in keywords:
+
+                    if keyword in label_text:
+
+                        score += 15
+                        break
 
         scored.append(
-            (score, label)
+            (
+                score,
+                label
+            )
         )
 
     if not scored:
@@ -570,155 +662,345 @@ def choose_best_fda_label(results, medicine):
 
 
 # ============================================================
-# EXTRACT FDA INFORMATION
+# FETCH FDA INFORMATION
 # ============================================================
 
-def get_label_field(label, field):
-    """Safely get FDA label field."""
+@st.cache_data(
+    ttl=21600,
+    show_spinner=False
+)
+def get_fda_label(
+    medicine,
+    dosage_form=""
+):
+
+    canonical = get_canonical_name(
+        medicine
+    )
+
+    searches = [
+        f'openfda.generic_name:"{canonical}"',
+        f'openfda.substance_name:"{canonical}"',
+        f'openfda.brand_name:"{canonical}"'
+    ]
+
+    for search in searches:
+
+        try:
+
+            response = requests.get(
+                OPENFDA_BASE,
+                params={
+                    "search": search,
+                    "limit": 100
+                },
+                timeout=REQUEST_TIMEOUT
+            )
+
+            if response.status_code != 200:
+                continue
+
+            results = (
+                response.json()
+                .get("results", [])
+            )
+
+            if results:
+
+                return choose_best_fda_label(
+                    results,
+                    canonical,
+                    dosage_form
+                )
+
+        except Exception:
+
+            continue
+
+    return None
+
+
+# ============================================================
+# GET FDA FIELD
+# ============================================================
+
+def get_label_field(
+    label,
+    field
+):
 
     if not label:
         return ""
 
-    value = label.get(field, "")
+    return clean_text(
+        label.get(field, "")
+    )
 
-    return clean_text(value)
 
+# ============================================================
+# EXTRACT ALL IMPORTANT FDA INFORMATION
+# ============================================================
 
 def extract_label_sections(label):
-    """Extract useful FDA sections."""
 
     if not label:
+
         return {
             "purpose": "",
             "indications": "",
             "warnings": "",
             "side_effects": "",
             "contraindications": "",
-            "dosage": ""
+            "dosage": "",
+            "interactions": "",
+            "precautions": "",
+            "populations": "",
+            "pregnancy": "",
+            "pediatric_use": "",
+            "geriatric_use": "",
+            "overdosage": "",
+            "clinical_pharmacology": "",
+            "description": "",
+            "mechanism": ""
         }
 
     return {
-        "purpose": get_label_field(
-            label,
-            "purpose"
-        ),
 
-        "indications": get_label_field(
-            label,
-            "indications_and_usage"
-        ),
+        "purpose":
+            get_label_field(
+                label,
+                "purpose"
+            ),
 
-        "warnings": get_label_field(
-            label,
-            "warnings"
-        ),
+        "indications":
+            get_label_field(
+                label,
+                "indications_and_usage"
+            ),
 
-        "side_effects": get_label_field(
-            label,
-            "adverse_reactions"
-        ),
+        "warnings":
+            get_label_field(
+                label,
+                "warnings"
+            ),
 
-        "contraindications": get_label_field(
-            label,
-            "contraindications"
-        ),
+        "side_effects":
+            get_label_field(
+                label,
+                "adverse_reactions"
+            ),
 
-        "dosage": get_label_field(
-            label,
-            "dosage_and_administration"
-        )
+        "contraindications":
+            get_label_field(
+                label,
+                "contraindications"
+            ),
+
+        "dosage":
+            get_label_field(
+                label,
+                "dosage_and_administration"
+            ),
+
+        "interactions":
+            get_label_field(
+                label,
+                "drug_interactions"
+            ),
+
+        "precautions":
+            get_label_field(
+                label,
+                "precautions"
+            ),
+
+        "populations":
+            get_label_field(
+                label,
+                "use_in_specific_populations"
+            ),
+
+        "pregnancy":
+            get_label_field(
+                label,
+                "pregnancy"
+            ),
+
+        "pediatric_use":
+            get_label_field(
+                label,
+                "pediatric_use"
+            ),
+
+        "geriatric_use":
+            get_label_field(
+                label,
+                "geriatric_use"
+            ),
+
+        "overdosage":
+            get_label_field(
+                label,
+                "overdosage"
+            ),
+
+        "clinical_pharmacology":
+            get_label_field(
+                label,
+                "clinical_pharmacology"
+            ),
+
+        "description":
+            get_label_field(
+                label,
+                "description"
+            ),
+
+        "mechanism":
+            get_label_field(
+                label,
+                "mechanism_of_action"
+            )
     }
 
 
 # ============================================================
-# MEDICINE ANALYSIS
+# ANALYZE MEDICINE
 # ============================================================
 
-def analyze_medicine(user_medicine):
+def analyze_medicine(
+    user_medicine
+):
 
-    original = clean_text(user_medicine)
+    original = clean_text(
+        user_medicine
+    )
 
-    canonical = get_canonical_name(original)
+    dosage_form = extract_dosage_form(
+        original
+    )
 
-    # --------------------------------------------------------
-    # Cache
-    # --------------------------------------------------------
+    canonical = get_canonical_name(
+        original
+    )
 
-    cache_key = canonical
+    # Include dosage form in cache key.
+    # This prevents tablet and eye-drop labels
+    # from being mixed together.
+
+    cache_key = (
+        f"{canonical}|{dosage_form}"
+    )
 
     if cache_key in st.session_state.medicine_cache:
-        return st.session_state.medicine_cache[cache_key]
 
-    # --------------------------------------------------------
+        return (
+            st.session_state
+            .medicine_cache[cache_key]
+        )
+
     # RxNorm
-    # --------------------------------------------------------
+    rxcui = get_rxnorm_rxcui(
+        canonical
+    )
 
-    rxcui = get_rxnorm_rxcui(canonical)
+    properties = get_rxnorm_properties(
+        rxcui
+    )
 
-    properties = get_rxnorm_properties(rxcui)
-
-    # --------------------------------------------------------
     # FDA
-    # --------------------------------------------------------
-
-    fda_label = get_fda_label(canonical)
+    fda_label = get_fda_label(
+        canonical,
+        dosage_form
+    )
 
     sections = extract_label_sections(
         fda_label
     )
 
-    # --------------------------------------------------------
-    # Standard name
-    # --------------------------------------------------------
-
     if properties:
-        standard_name = clean_text(
-            properties.get("name", "")
-        )
-    else:
-        standard_name = canonical.title()
 
-    # --------------------------------------------------------
-    # Result
-    # --------------------------------------------------------
+        standard_name = clean_text(
+            properties.get(
+                "name",
+                ""
+            )
+        )
+
+    else:
+
+        standard_name = (
+            canonical.title()
+        )
 
     result = {
-        "input_name": original,
-        "canonical_name": canonical,
-        "rxcui": rxcui,
-        "standard_name": standard_name,
-        "properties": properties,
-        "fda_label": fda_label,
-        "sections": sections,
-        "identified": bool(rxcui or fda_label)
+
+        "input_name":
+            original,
+
+        "canonical_name":
+            canonical,
+
+        "dosage_form":
+            dosage_form,
+
+        "rxcui":
+            rxcui,
+
+        "standard_name":
+            standard_name,
+
+        "properties":
+            properties,
+
+        "fda_label":
+            fda_label,
+
+        "sections":
+            sections,
+
+        "identified":
+            bool(
+                rxcui or fda_label
+            )
     }
 
-    st.session_state.medicine_cache[cache_key] = result
+    st.session_state.medicine_cache[
+        cache_key
+    ] = result
 
     return result
 
 
 # ============================================================
-# INTERACTION CHECK
+# SEARCH FOR INTERACTION EVIDENCE
 # ============================================================
 
-def search_label_for_interaction(medicine_a, medicine_b):
-    """
-    Search FDA labels for explicit references to the other medicine.
-    """
+def search_label_for_interaction(
+    medicine_a,
+    medicine_b
+):
 
-    canonical_a = get_canonical_name(medicine_a)
-    canonical_b = get_canonical_name(medicine_b)
+    canonical_a = get_canonical_name(
+        medicine_a
+    )
+
+    canonical_b = get_canonical_name(
+        medicine_b
+    )
+
+    dosage_form_a = extract_dosage_form(
+        medicine_a
+    )
 
     try:
 
         response = requests.get(
             OPENFDA_BASE,
             params={
-                "search": (
-                    f'openfda.generic_name:"{canonical_a}"'
-                ),
-                "limit": 10
+                "search":
+                    f'openfda.generic_name:"{canonical_a}"',
+                "limit": 100
             },
             timeout=REQUEST_TIMEOUT
         )
@@ -726,11 +1008,9 @@ def search_label_for_interaction(medicine_a, medicine_b):
         if response.status_code != 200:
             return None
 
-        data = response.json()
-
-        results = data.get(
-            "results",
-            []
+        results = (
+            response.json()
+            .get("results", [])
         )
 
         if not results:
@@ -738,13 +1018,13 @@ def search_label_for_interaction(medicine_a, medicine_b):
 
         label = choose_best_fda_label(
             results,
-            canonical_a
+            canonical_a,
+            dosage_form_a
         )
 
         if not label:
             return None
 
-        # Search all relevant sections.
         fields = [
             "drug_interactions",
             "warnings",
@@ -763,47 +1043,69 @@ def search_label_for_interaction(medicine_a, medicine_b):
                 ""
             )
 
-            if isinstance(value, list):
-                text_parts.extend(value)
+            if isinstance(
+                value,
+                list
+            ):
+
+                text_parts.extend(
+                    str(x)
+                    for x in value
+                )
+
             elif value:
-                text_parts.append(str(value))
+
+                text_parts.append(
+                    str(value)
+                )
 
         text = " ".join(
             text_parts
         ).lower()
 
-        # Search generic and original names.
-        possible_terms = {
+        terms = {
             canonical_b,
-            clean_text(medicine_b).lower()
+            clean_text(
+                medicine_b
+            ).lower()
         }
 
-        for term in possible_terms:
+        for term in terms:
 
             if term and term in text:
 
-                # Return only a relevant excerpt.
-                index = text.find(term)
+                index = text.find(
+                    term
+                )
 
                 start = max(
                     0,
-                    index - 250
+                    index - 300
                 )
 
                 end = min(
                     len(text),
-                    index + 600
+                    index + 700
                 )
 
-                return text[start:end]
+                return text[
+                    start:end
+                ]
 
     except Exception:
+
         return None
 
     return None
 
 
-def check_interactions(medicines):
+# ============================================================
+# CHECK INTERACTIONS
+# ============================================================
+
+def check_interactions(
+    medicines
+):
 
     results = []
 
@@ -812,202 +1114,687 @@ def check_interactions(medicines):
         2
     ):
 
-        evidence_a = search_label_for_interaction(
-            medicine_a,
-            medicine_b
+        evidence_a = (
+            search_label_for_interaction(
+                medicine_a,
+                medicine_b
+            )
         )
 
-        evidence_b = search_label_for_interaction(
-            medicine_b,
-            medicine_a
+        evidence_b = (
+            search_label_for_interaction(
+                medicine_b,
+                medicine_a
+            )
         )
 
         if evidence_a or evidence_b:
 
-            evidence = (
-                evidence_a
-                if evidence_a
-                else evidence_b
-            )
+            results.append(
+                {
+                    "medicine_a":
+                        medicine_a,
 
-            results.append({
-                "medicine_a": medicine_a,
-                "medicine_b": medicine_b,
-                "found": True,
-                "evidence": evidence
-            })
+                    "medicine_b":
+                        medicine_b,
+
+                    "found":
+                        True,
+
+                    "evidence":
+                        evidence_a
+                        if evidence_a
+                        else evidence_b
+                }
+            )
 
         else:
 
-            results.append({
-                "medicine_a": medicine_a,
-                "medicine_b": medicine_b,
-                "found": False,
-                "evidence": ""
-            })
+            results.append(
+                {
+                    "medicine_a":
+                        medicine_a,
+
+                    "medicine_b":
+                        medicine_b,
+
+                    "found":
+                        False,
+
+                    "evidence":
+                        ""
+                }
+            )
 
     return results
 
 
 # ============================================================
-# DISPLAY HELPERS
+# OPENAI CLIENT
 # ============================================================
 
-def display_text(text, max_chars=6000):
+def get_openai_client():
 
-    if not text:
-        return
+    try:
 
-    text = clean_text(text)
+        from openai import OpenAI
 
-    if len(text) > max_chars:
-        text = text[:max_chars] + "..."
+        api_key = ""
 
-    st.write(text)
+        try:
+
+            api_key = st.secrets.get(
+                "OPENAI_API_KEY",
+                ""
+            )
+
+        except Exception:
+
+            api_key = ""
+
+        if not api_key:
+
+            return None
+
+        return OpenAI(
+            api_key=api_key
+        )
+
+    except Exception:
+
+        return None
 
 
-def display_medicine(result):
+# ============================================================
+# AI MEDICINE SUMMARY
+# ============================================================
 
-    name = result["input_name"]
+def summarize_with_ai(
+    medicine_result,
+    interaction_evidence=""
+):
+
+    client = get_openai_client()
+
+    if client is None:
+        return None
+
+    sections = (
+        medicine_result["sections"]
+    )
+
+    source_information = f"""
+Medicine:
+{medicine_result["standard_name"]}
+
+Active ingredient:
+{medicine_result["canonical_name"]}
+
+Dosage form:
+{medicine_result["dosage_form"]}
+
+Purpose:
+{sections["purpose"]}
+
+Indications:
+{sections["indications"]}
+
+Warnings:
+{sections["warnings"]}
+
+Contraindications:
+{sections["contraindications"]}
+
+Side effects:
+{sections["side_effects"]}
+
+Interaction information:
+{sections["interactions"]}
+
+Additional interaction evidence:
+{interaction_evidence or "None found."}
+"""
+
+    prompt = f"""
+You are the medicine-information
+summarization component of MediSate AI.
+
+The information below was retrieved
+from medicine reference databases.
+
+Create a very short,
+patient-friendly summary.
+
+IMPORTANT:
+
+1. Use only information in the supplied data.
+2. Do not invent medical facts.
+3. Do not diagnose.
+4. Do not prescribe.
+5. Do not recommend starting or stopping medicine.
+6. Do not recommend a dose.
+7. Do not invent interactions.
+8. Use short bullet points.
+9. Maximum 5 side effects.
+10. Maximum 4 warnings.
+11. Maximum 4 caution points.
+12. Keep the answer under 180 words.
+
+Return:
+
+### 🎯 Used for
+- Short bullet
+- Short bullet
+
+### 🩺 Important side effects
+- Short bullet
+- Short bullet
+- Short bullet
+
+### ⚠️ Important warnings
+- Short bullet
+- Short bullet
+
+### 🚫 Avoid / use caution
+- Short bullet
+- Short bullet
+
+### 💡 Key takeaway
+- One short sentence
+
+Retrieved information:
+
+{source_information}
+"""
+
+    try:
+
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input=prompt,
+            max_output_tokens=450
+        )
+
+        answer = clean_text(
+            response.output_text
+        )
+
+        if not answer:
+            return None
+
+        return answer
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# FALLBACK SUMMARY
+# ============================================================
+
+def simple_fallback_summary(
+    result
+):
+
+    sections = result[
+        "sections"
+    ]
+
+    output = []
+
+    # USED FOR
+    output.append(
+        "### 🎯 Used for"
+    )
+
+    purpose = (
+        sections["purpose"]
+        or
+        sections["indications"]
+    )
+
+    if purpose:
+
+        sentences = re.split(
+            r'(?<=[.!?])\s+',
+            purpose
+        )
+
+        text = " ".join(
+            sentences[:2]
+        )
+
+        text = clean_text(
+            text
+        )
+
+        if len(text) > 300:
+
+            text = (
+                text[:300]
+                + "..."
+            )
+
+        output.append(
+            f"- {text}"
+        )
+
+    else:
+
+        output.append(
+            "- No concise usage information was found."
+        )
+
+    # SIDE EFFECTS
+    output.append(
+        "### 🩺 Important side effects"
+    )
+
+    side_effect_text = (
+        sections["side_effects"]
+    )
+
+    common_terms = [
+        "headache",
+        "dizziness",
+        "nausea",
+        "vomiting",
+        "diarrhea",
+        "diarrhoea",
+        "abdominal pain",
+        "rash",
+        "fatigue",
+        "insomnia",
+        "drowsiness",
+        "constipation",
+        "stomach pain"
+    ]
+
+    found = []
+
+    lower_text = (
+        side_effect_text.lower()
+    )
+
+    for term in common_terms:
+
+        if term in lower_text:
+
+            found.append(
+                term
+            )
+
+    if found:
+
+        for item in list(
+            dict.fromkeys(found)
+        )[:5]:
+
+            output.append(
+                f"- {item.title()}"
+            )
+
+    else:
+
+        output.append(
+            "- Refer to the official label for complete information."
+        )
+
+    # WARNINGS
+    output.append(
+        "### ⚠️ Important warnings"
+    )
+
+    warning_text = (
+        sections["warnings"]
+    )
+
+    if warning_text:
+
+        sentences = re.split(
+            r'(?<=[.!?])\s+',
+            warning_text
+        )
+
+        count = 0
+
+        for sentence in sentences:
+
+            sentence = clean_text(
+                sentence
+            )
+
+            if len(sentence) < 30:
+                continue
+
+            if len(sentence) > 170:
+
+                sentence = (
+                    sentence[:170]
+                    + "..."
+                )
+
+            output.append(
+                f"- {sentence}"
+            )
+
+            count += 1
+
+            if count >= 4:
+                break
+
+    else:
+
+        output.append(
+            "- No concise warning information was found."
+        )
+
+    # CAUTIONS
+    output.append(
+        "### 🚫 Avoid / use caution"
+    )
+
+    contraindication_text = (
+        sections["contraindications"]
+    )
+
+    if contraindication_text:
+
+        sentences = re.split(
+            r'(?<=[.!?])\s+',
+            contraindication_text
+        )
+
+        count = 0
+
+        for sentence in sentences:
+
+            sentence = clean_text(
+                sentence
+            )
+
+            if len(sentence) < 30:
+                continue
+
+            if len(sentence) > 170:
+
+                sentence = (
+                    sentence[:170]
+                    + "..."
+                )
+
+            output.append(
+                f"- {sentence}"
+            )
+
+            count += 1
+
+            if count >= 4:
+                break
+
+    else:
+
+        output.append(
+            "- Ask a doctor or pharmacist if you are unsure."
+        )
+
+    # TAKEAWAY
+    output.append(
+        "### 💡 Key takeaway"
+    )
+
+    output.append(
+        "- Use this information for education and verify it with a healthcare professional."
+    )
+
+    return "\n".join(
+        output
+    )
+
+
+# ============================================================
+# AI INTERACTION SUMMARY
+# ============================================================
+
+def summarize_interaction_with_ai(
+    medicine_a,
+    medicine_b,
+    evidence
+):
+
+    client = get_openai_client()
+
+    if client is None:
+        return None
+
+    prompt = f"""
+You are MediSate AI's
+interaction summarizer.
+
+Medicines:
+{medicine_a}
+{medicine_b}
+
+Retrieved label evidence:
+{evidence}
+
+Explain only what is supported
+by the evidence.
+
+Rules:
+
+- Do not invent an interaction.
+- Do not claim the medicines are definitely safe.
+- Do not diagnose.
+- Do not recommend changing medication.
+- Use simple language.
+- Keep under 100 words.
+
+Return:
+
+### 🔍 Interaction result
+- One or two short sentences.
+
+### ⚠️ What this means
+- One or two short sentences.
+
+### 👨‍⚕️ Safety
+- One short sentence recommending professional verification.
+"""
+
+    try:
+
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input=prompt,
+            max_output_tokens=250
+        )
+
+        answer = clean_text(
+            response.output_text
+        )
+
+        if not answer:
+            return None
+
+        return answer
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# DISPLAY MEDICINE
+# ============================================================
+
+def display_medicine(
+    result,
+    interaction_evidence=""
+):
 
     st.markdown(
-        f'<div class="medicine-title">💊 {name.title()}</div>',
+        f"""
+        <div class="medicine-title">
+        💊 {result["input_name"].title()}
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
-    # --------------------------------------------------------
-    # Identification status
-    # --------------------------------------------------------
-
     if result["identified"]:
-        st.success("Medicine identified.")
+
+        st.success(
+            "Medicine identified."
+        )
+
     else:
+
         st.warning(
             "This medicine could not be confidently identified."
         )
 
-    # --------------------------------------------------------
-    # Canonical ingredient
-    # --------------------------------------------------------
+    st.markdown(
+        f"**Active ingredient:** "
+        f"{result['canonical_name'].title()}"
+    )
 
-    canonical = result["canonical_name"]
+    if result["dosage_form"]:
 
-    if canonical:
         st.markdown(
-            f"**Active ingredient:** {canonical.title()}"
+            f"**Dosage form:** "
+            f"{result['dosage_form'].title()}"
         )
-
-    # --------------------------------------------------------
-    # Standard name
-    # --------------------------------------------------------
-
-    standard_name = result["standard_name"]
-
-    if standard_name:
-        st.markdown(
-            f"**Standard name:** {standard_name}"
-        )
-
-    # --------------------------------------------------------
-    # RxNorm
-    # --------------------------------------------------------
 
     if result["rxcui"]:
 
+        st.caption(
+            f"RxNorm ID: {result['rxcui']}"
+        )
+
+    # AI SUMMARY
+    with st.spinner(
+        "Creating medicine summary..."
+    ):
+
+        summary = summarize_with_ai(
+            result,
+            interaction_evidence
+        )
+
+    if summary:
+
         st.markdown(
-            f"**RxNorm ID:** {result['rxcui']}"
+            "### 🤖 AI Summary"
+        )
+
+        st.markdown(
+            summary
         )
 
     else:
 
-        st.info(
-            "No exact RxNorm ingredient ID was found."
+        st.markdown(
+            "### 📋 Medicine Summary"
         )
 
-    # --------------------------------------------------------
-    # FDA label
-    # --------------------------------------------------------
-
-    sections = result["sections"]
-
-    if result["fda_label"]:
-
-        st.success(
-            "Official drug-label information found."
+        st.markdown(
+            simple_fallback_summary(
+                result
+            )
         )
 
-        # Purpose
-        if sections["purpose"]:
+    # FULL FDA INFORMATION
+    with st.expander(
+        "📚 Retrieved medicine database information"
+    ):
 
-            st.markdown(
-                "### 🎯 What is it used for?"
-            )
+        sections = result[
+            "sections"
+        ]
 
-            display_text(
-                sections["purpose"]
-            )
+        fields = {
 
-        elif sections["indications"]:
+            "Purpose":
+                sections["purpose"],
 
-            st.markdown(
-                "### 🎯 What is it used for?"
-            )
+            "Indications":
+                sections["indications"],
 
-            display_text(
-                sections["indications"]
-            )
+            "Warnings":
+                sections["warnings"],
 
-        # Warnings
-        if sections["warnings"]:
+            "Side Effects":
+                sections["side_effects"],
 
-            st.markdown(
-                "### ⚠️ Important warnings"
-            )
+            "Contraindications":
+                sections["contraindications"],
 
-            st.warning(
-                clean_text(
-                    sections["warnings"]
+            "Dosage and Administration":
+                sections["dosage"],
+
+            "Drug Interactions":
+                sections["interactions"],
+
+            "Precautions":
+                sections["precautions"],
+
+            "Use in Specific Populations":
+                sections["populations"],
+
+            "Pregnancy":
+                sections["pregnancy"],
+
+            "Pediatric Use":
+                sections["pediatric_use"],
+
+            "Geriatric Use":
+                sections["geriatric_use"],
+
+            "Overdosage":
+                sections["overdosage"],
+
+            "Clinical Pharmacology":
+                sections["clinical_pharmacology"],
+
+            "Description":
+                sections["description"],
+
+            "Mechanism of Action":
+                sections["mechanism"]
+        }
+
+        for title, value in fields.items():
+
+            if value:
+
+                st.markdown(
+                    f"**{title}**"
                 )
+
+                st.write(
+                    value
+                )
+
+                st.divider()
+
+    # RXNORM
+    with st.expander(
+        "🔬 RxNorm information"
+    ):
+
+        if result["properties"]:
+
+            st.json(
+                result["properties"]
             )
 
-        # Contraindications
-        if sections["contraindications"]:
+        else:
 
-            st.markdown(
-                "### 🚫 When should it be avoided?"
+            st.write(
+                "No additional RxNorm information found."
             )
-
-            display_text(
-                sections["contraindications"]
-            )
-
-        # Side effects
-        if sections["side_effects"]:
-
-            st.markdown(
-                "### 🩺 Possible side effects"
-            )
-
-            display_text(
-                sections["side_effects"]
-            )
-
-        # Dosage
-        if sections["dosage"]:
-
-            st.markdown(
-                "### 💊 Dosage information"
-            )
-
-            display_text(
-                sections["dosage"]
-            )
-
-    else:
-
-        st.warning(
-            "Detailed FDA label information was not found for this medicine."
-        )
 
 
 # ============================================================
@@ -1020,30 +1807,34 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">'
-    "Understand your medicines, their common uses, effects, "
-    "warnings and potential interactions."
-    "</div>",
+    """
+    <div class="subtitle">
+    Medicine Information & Interaction Assistant
+    </div>
+    """,
     unsafe_allow_html=True
 )
 
 st.warning(
-    "⚠️ Educational information only. This tool does not diagnose "
-    "conditions, prescribe medicines, or replace a doctor or pharmacist."
+    "⚠️ Educational information only. "
+    "This tool does not diagnose conditions, "
+    "prescribe medicines, or replace a doctor or pharmacist."
 )
 
 
 # ============================================================
-# INPUT
+# MEDICINE INPUT
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">💊 Enter your medicines</div>',
+    '<div class="section-title">'
+    '💊 Enter your medicines'
+    '</div>',
     unsafe_allow_html=True
 )
 
 st.write(
-    "Enter medicine names separated by commas"
+    "Enter medicine names separated by commas."
 )
 
 medicine_input = st.text_input(
@@ -1052,14 +1843,13 @@ medicine_input = st.text_input(
     label_visibility="collapsed"
 )
 
-
 analyze_button = st.button(
     "🔎 Analyze Medicines"
 )
 
 
 # ============================================================
-# ANALYSIS
+# MAIN PROGRAM
 # ============================================================
 
 if analyze_button:
@@ -1072,29 +1862,37 @@ if analyze_button:
 
         st.stop()
 
-    # --------------------------------------------------------
-    # Split input
-    # --------------------------------------------------------
-
+    # Split medicines
     medicines = [
         clean_text(x)
         for x in medicine_input.split(",")
         if clean_text(x)
     ]
 
-    # Remove duplicates while preserving order.
+    # Remove duplicates
     unique_medicines = []
 
     seen = set()
 
     for medicine in medicines:
 
-        key = normalize_name(medicine)
+        key = (
+            get_canonical_name(
+                medicine
+            )
+            + "|"
+            + extract_dosage_form(
+                medicine
+            )
+        )
 
         if key not in seen:
 
             seen.add(key)
-            unique_medicines.append(medicine)
+
+            unique_medicines.append(
+                medicine
+            )
 
     medicines = unique_medicines
 
@@ -1102,59 +1900,98 @@ if analyze_button:
         f"Found {len(medicines)} medicine(s)"
     )
 
-    # --------------------------------------------------------
-    # Analyze each medicine
-    # --------------------------------------------------------
-
-    analyzed = []
-
+    # Retrieve medicine data
     with st.spinner(
-        "Analyzing medicines..."
+        "Retrieving medicine information from databases..."
     ):
+
+        analyzed = []
 
         for medicine in medicines:
 
-            result = analyze_medicine(
-                medicine
+            analyzed.append(
+                analyze_medicine(
+                    medicine
+                )
             )
 
-            analyzed.append(result)
+    # Interaction checking
+    interaction_results = []
 
-    # --------------------------------------------------------
-    # Display medicine information
-    # --------------------------------------------------------
+    if len(medicines) >= 2:
+
+        with st.spinner(
+            "Checking medicine interaction information..."
+        ):
+
+            interaction_results = (
+                check_interactions(
+                    medicines
+                )
+            )
+
+    # ========================================================
+    # MEDICINE SUMMARY
+    # ========================================================
+
+    st.markdown(
+        '<div class="section-title">'
+        '📋 Medicine Summary'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
     for result in analyzed:
 
+        related_evidence = []
+
+        for interaction in interaction_results:
+
+            if not interaction["found"]:
+                continue
+
+            if (
+                interaction["medicine_a"]
+                == result["input_name"]
+                or
+                interaction["medicine_b"]
+                == result["input_name"]
+            ):
+
+                related_evidence.append(
+                    interaction["evidence"]
+                )
+
+        evidence_text = "\n".join(
+            related_evidence
+        )
+
         display_medicine(
-            result
+            result,
+            evidence_text
         )
 
         st.divider()
 
     # ========================================================
-    # INTERACTION CHECK
+    # INTERACTION SCREENING
     # ========================================================
+
+    st.markdown(
+        '<div class="section-title">'
+        '🔍 Interaction Screening'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
     if len(medicines) >= 2:
 
-        st.markdown(
-            '<div class="section-title">🔍 Interaction Check</div>',
-            unsafe_allow_html=True
-        )
-
         st.info(
-            "This is a label-based screening tool. "
-            "It is not a complete drug-interaction checker."
+            "Interaction screening is based on "
+            "retrieved drug-label information. "
+            "No detected interaction does not prove "
+            "that no interaction exists."
         )
-
-        with st.spinner(
-            "Checking available drug-label information..."
-        ):
-
-            interaction_results = check_interactions(
-                medicines
-            )
 
         for interaction in interaction_results:
 
@@ -1171,47 +2008,60 @@ if analyze_button:
             if interaction["found"]:
 
                 st.warning(
-                    "A reference to the other medicine was found "
-                    "in the retrieved drug-label information."
+                    "Interaction-related information "
+                    "was found in the retrieved label data."
                 )
 
-                if interaction["evidence"]:
+                with st.spinner(
+                    "Summarizing interaction evidence..."
+                ):
 
-                    with st.expander(
-                        "View label evidence"
-                    ):
-
-                        st.write(
+                    summary = (
+                        summarize_interaction_with_ai(
+                            interaction["medicine_a"],
+                            interaction["medicine_b"],
                             interaction["evidence"]
                         )
+                    )
+
+                if summary:
+
+                    st.markdown(
+                        summary
+                    )
+
+                else:
+
+                    st.markdown(
+                        "### 🔍 Interaction result"
+                    )
+
+                    st.write(
+                        "Relevant interaction information "
+                        "was found in the retrieved label."
+                    )
+
+                    st.write(
+                        "Please verify the significance "
+                        "with a doctor or pharmacist."
+                    )
 
             else:
 
                 st.success(
-                    "No direct interaction reference was found "
-                    "in the retrieved labels."
+                    "No direct interaction reference "
+                    "was found in the retrieved labels."
                 )
 
                 st.info(
-                    "No direct interaction reference was detected "
-                    "in the retrieved labels. This does NOT prove "
-                    "that no interaction exists."
+                    "This does not prove that no interaction exists."
                 )
-
-    # ========================================================
-    # SINGLE MEDICINE
-    # ========================================================
 
     else:
 
-        st.markdown(
-            '<div class="section-title">🔍 Interaction Check</div>',
-            unsafe_allow_html=True
-        )
-
         st.info(
             "Enter two or more medicines to perform "
-            "a label-based interaction screening."
+            "interaction screening."
         )
 
 
@@ -1222,7 +2072,8 @@ if analyze_button:
 st.divider()
 
 st.caption(
-    "MediSate AI • Educational medicine information tool • "
+    "MediSate AI • Medicine information and "
+    "interaction screening tool • Educational use only • "
     "Always verify medicine information with a qualified "
     "doctor or pharmacist."
 )
